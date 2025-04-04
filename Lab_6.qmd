@@ -42,6 +42,7 @@ camels <- power_full_join(camels ,by = 'gauge_id')
 ```
 
 # Question 1
+
 ```{r}
 install.packages("ggthemes")
 library(ggplot2)
