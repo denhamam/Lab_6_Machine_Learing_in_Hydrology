@@ -1,7 +1,7 @@
 ---
 project:
   title: "Lab 6: Machine Learning in Hydrology"
-  output-dir: docs
+  output-dir:  docs
   type: website
   
 format:
@@ -18,6 +18,8 @@ library(powerjoin)
 library(glue)
 library(vip)
 library(baguette)
+library(ggthemes)
+
 ```
 
 ```{r}
@@ -37,13 +39,6 @@ camels <- map(local_files, read_delim, show_col_types = FALSE)
 
 camels <- power_full_join(camels ,by = 'gauge_id')
 
-```
-
-```{r}
-sum(is.na(baked_data$logQmean))   # Count missing values
-sum(is.infinite(baked_data$logQmean))  # Count infinite values
-
-baked_data <- na.omit(baked_data)
 ```
 
 # Question 1
