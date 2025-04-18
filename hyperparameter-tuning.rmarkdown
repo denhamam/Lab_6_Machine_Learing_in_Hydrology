@@ -1,0 +1,289 @@
+---
+title: "Lab 8: hyperparameter-tuning"
+format: html
+editor: visual
+---
+
+
+
+Libraries 
+
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+library(visdat)
+library(powerjoin)
+library(glue)
+```
+
+
+
+Data Import/Tidy/Transform
+
+
+```{r}
+root  <- 'https://gdex.ucar.edu/dataset/camels/file'
+download.file('https://gdex.ucar.edu/dataset/camels/file/camels_attributes_v2.0.pdf', 
+              'data/camels_attributes_v2.0.pdf', mode = "wb")
+
+types <- c("clim", "geol", "soil", "topo", "vege", "hydro")
+
+remote_files  <- glue('{root}/camels_{types}.txt')
+
+local_files   <- glue('data/camels_{types}.txt')
+
+walk2(remote_files, local_files, download.file, quiet = TRUE)
+
+camels <- map(local_files, read_delim, show_col_types = FALSE)
+
+camels <- power_full_join(camels ,by = 'gauge_id')
+
+```
+
+```{r}
+camels_clean <- camels %>% select(where(~!all(is.na(.))))
+camels_clean %>% select(gauge_id, gauge_lat, gauge_lon)
+camels_clean <- camels_clean %>% filter(!is.na(q_mean))
+skim(camels_clean)
+vis_miss(camels_clean)
+```
+
+
+
+Data Splitting
+
+
+```{r}
+set.seed(123)
+camels_split <- initial_split(camels_clean, prop = 0.8)
+camels_train <- training(camels_split)
+camels_test  <- testing(camels_split)
+```
+
+
+
+Feature Engineering
+
+
+```{r}
+camels_recipe <- recipe(q_mean ~ ., data = camels_train) %>%
+  step_rm(gauge_lat, gauge_lon) %>%
+  step_novel(all_nominal_predictors()) %>%
+  step_unknown(all_nominal_predictors()) %>%   
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+```
+
+
+
+Resampling and Model Testing
+
+Build Resamples 
+
+
+```{r}
+cv_folds <- vfold_cv(camels_train, v = 10)
+```
+
+
+Build 3 Candidate Models 
+
+
+```{r}
+lm_spec <- linear_reg() %>%
+  set_engine("lm") %>%
+  set_mode("regression")
+
+rf_spec <- rand_forest() %>%
+  set_engine("ranger") %>%
+  set_mode("regression")
+
+xgb_spec <- boost_tree() %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+```
+
+
+Test the Models
+
+
+```{r}
+model_set <- workflow_set(
+  preproc = list(camels_recipe = camels_recipe),
+  models = list(
+    linear = lm_spec,
+    random_forest = rf_spec,
+    boosted_tree = xgb_spec
+  )
+)
+
+set.seed(123)
+model_results <- workflow_map(
+  model_set,
+  resamples = cv_folds,
+  metrics = metric_set(rmse, rsq),
+  verbose = TRUE
+)
+
+```
+
+
+Model Selection
+
+
+```{r}
+autoplot(model_results)
+```
+
+
+The best model would be the boost tree. It has the highest R^2 so it can explain variance in the data the best. It also has the lowest RMSE so it can have the most accurate predictions
+
+Model Tuning 
+
+Build a model for your chosen specification 
+
+
+```{r}
+xgb_tune_spec <- boost_tree(
+  trees = tune(),
+  learn_rate = tune(),
+  tree_depth = tune()
+) %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+```
+
+
+Create a workflow
+
+
+```{r}
+wf_tune <- workflow() %>%
+  add_model(xgb_tune_spec) %>%
+  add_recipe(camels_recipe)
+```
+
+
+Check the Tunable Values/Ranges 
+
+
+```{r}
+dials <- extract_parameter_set_dials(wf_tune)
+dials$object
+```
+
+
+Define the Search Space
+
+
+```{r}
+set.seed(123)
+my.grid <- grid_latin_hypercube(dials, size = 25)
+```
+
+
+Tune the Model
+
+
+```{r tune-model, cache=TRUE}
+model_params <- tune_grid(
+  wf_tune,
+  resamples = cv_folds,
+  grid = my.grid,
+  metrics = metric_set(rmse, rsq, mae),
+  control = control_grid(save_pred = TRUE)
+)
+``` 
+
+```{r}
+model_params
+autoplot(model_params)
+```
+
+
+I see the points of mae, rmse, and rsq following a line with a few outliers for each model
+
+Check the Skill of the Tuned Model
+
+
+```{r}
+collect_metrics(model_params) %>%
+  filter(.metric == "mae") %>%
+  arrange(mean) %>%
+  slice_head(n = 5)
+
+show_best(model_params, metric = "mae", n = 1)
+hp_best <- select_best(model_params, metric = "mae")
+final_wf <- finalize_workflow(
+  wf_tune, hp_best
+)
+```
+
+
+The results from show_best() are that the best-preforming boosted tree model using MAE has a tree depth of 5, a learning rate of 0.011 and uses 1167 trees
+
+Finalize your model
+
+
+```{r}
+final_xgb_wf <- finalize_workflow(wf_tune, hp_best)
+```
+
+
+
+Final Model Verification
+
+
+```{r}
+final_fit <- last_fit(final_xgb_wf, split = camels_split)
+collect_metrics(final_fit)
+final_predictions <- collect_predictions(final_fit)
+ggplot(final_predictions, aes(x = .pred, y = q_mean)) +
+  geom_point(alpha = 0.6, color = "blue") +
+  geom_smooth(method = "lm", se = FALSE, color = "green", size = 1.2) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Final Model: Predicted vs. Actual Streamflow (q_mean)",
+    x = "Predicted q_mean",
+    y = "Actual q_mean"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.title = element_text(size = 12)
+  )
+```
+
+
+The R^2 is 0.985 which explains 98.5% of the variance in q_mean. RMSE is 0.175 which means that the predictions are off by 0.175 units
+
+Building a Map 
+
+
+```{r}
+final_fit <- fit(final_wf, camels_clean)
+
+camels_aug <- augment(final_fit, new_data = camels_clean) %>%
+  mutate(residual = (q_mean - .pred)^2)
+
+map_pred <- ggplot(camels_aug, aes(x = gauge_lon, y = gauge_lat, color = .pred)) +
+  geom_point(size = 2) +
+  coord_fixed() +
+  scale_color_viridis_c(option = "D") +
+  labs(title = "Predicted q_mean across CONUS", color = "Predicted") +
+  theme_minimal()
+
+map_resid <- ggplot(camels_aug, aes(x = gauge_lon, y = gauge_lat, color = residual)) +
+  geom_point(size = 2) +
+  coord_fixed() +
+  scale_color_viridis_c(option = "C") +
+  labs(title = "Residuals (Squared Errors)", color = "Residual") +
+  theme_minimal()
+
+(map_pred + map_resid)
+```
+
