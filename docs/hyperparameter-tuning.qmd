@@ -4,7 +4,8 @@ format: html
 editor: visual
 ---
 
-Libraries 
+Libraries
+
 ```{r}
 library(tidyverse)
 library(tidymodels)
@@ -18,6 +19,7 @@ library(powerjoin)
 ```
 
 Data Import/Tidy/Transform
+
 ```{r}
 root  <- 'https://gdex.ucar.edu/dataset/camels/file'
 download.file('https://gdex.ucar.edu/dataset/camels/file/camels_attributes_v2.0.pdf', 
@@ -36,6 +38,7 @@ camels <- map(local_files, read_delim, show_col_types = FALSE)
 camels <- power_full_join(camels ,by = 'gauge_id')
 
 ```
+
 ```{r}
 camels_clean <- camels %>% select(where(~!all(is.na(.))))
 camels_clean %>% select(gauge_id, gauge_lat, gauge_lon)
@@ -45,6 +48,7 @@ vis_miss(camels_clean)
 ```
 
 Data Splitting
+
 ```{r}
 set.seed(123)
 camels_split <- initial_split(camels_clean, prop = 0.8)
@@ -53,6 +57,7 @@ camels_test  <- testing(camels_split)
 ```
 
 Feature Engineering
+
 ```{r}
 camels_recipe <- recipe(q_mean ~ low_prec_freq + p_mean, data = camels_train) %>%
   step_novel(all_nominal_predictors()) %>%
@@ -65,11 +70,14 @@ camels_recipe <- recipe(q_mean ~ low_prec_freq + p_mean, data = camels_train) %>
 
 Resampling and Model Testing
 
-Build Resamples 
+Build Resamples
+
 ```{r}
 cv_folds <- vfold_cv(camels_train, v = 10)
 ```
-Build 3 Candidate Models 
+
+Build 3 Candidate Models
+
 ```{r}
 lin_reg_model <- linear_reg() %>%
   set_engine("lm") %>%
@@ -85,7 +93,9 @@ xgb_model <- boost_tree(trees = 500, learn_rate = 0.1) %>%
 
 
 ```
+
 Test the Models
+
 ```{r}
 models <- list(
   linear = lin_reg_model,
@@ -102,15 +112,19 @@ set.seed(123)
 wf_results <- wf_set %>%
   workflow_map("fit_resamples", resamples = cv_folds)
 ```
+
 Model Selection
+
 ```{r}
 autoplot(wf_results)
 ```
-The best model would be the boost tree. It has the highest R^2 so it can explain variance in the data the best. It also has the lowest RMSE so it can have the most accurate predictions
 
-Model Tuning 
+The best model would be the boost tree. It has the highest R\^2 so it can explain variance in the data the best. It also has the lowest RMSE so it can have the most accurate predictions
 
-Build a model for your chosen specification 
+Model Tuning
+
+Build a model for your chosen specification
+
 ```{r}
 boost_tree_tuned <- boost_tree(
   mode = "regression",
@@ -120,23 +134,31 @@ boost_tree_tuned <- boost_tree(
   learn_rate = tune()
 )
 ```
+
 Create a workflow
+
 ```{r}
 wf_tune <- workflow() %>%
   add_model(boost_tree_tuned) %>%
   add_recipe(camels_recipe)
 ```
+
 Check the Tunable Values/Ranges
+
 ```{r}
 dials <- extract_parameter_set_dials(wf_tune)
 dials$object
 ```
+
 Define the Search Space
+
 ```{r}
 set.seed(123)
 my.grid <- grid_latin_hypercube(dials, size = 25)
 ```
+
 Tune the Model
+
 ```{r tune-model, cache=TRUE}
 model_params <- tune_grid(
   wf_tune,
@@ -145,13 +167,16 @@ model_params <- tune_grid(
   metrics = metric_set(rmse, rsq, mae),
   control = control_grid(save_pred = TRUE)
 )
-``` 
+```
+
 ```{r}
 autoplot(model_params)
 ```
+
 I see the points of mae, rmse, and rsq following a line with a few outliers for each model
 
 Check the Skill of the Tuned Model
+
 ```{r}
 collect_metrics(model_params) %>%
   filter(.metric == "mae") %>%
@@ -164,9 +189,11 @@ final_wf <- finalize_workflow(
   wf_tune, hp_best
 )
 ```
+
 The results from show_best() are that the best-preforming boosted tree model using MAE has a tree depth of 5, a learning rate of 0.011 and uses 1167 trees
 
 Finalize your model
+
 ```{r}
 best_params <- select_best(model_params, metric = "rmse")
 final_xgb_model <- boost_tree(
@@ -183,6 +210,7 @@ final_fit <- last_fit(final_wf, split = camels_split)
 ```
 
 Final Model Verification
+
 ```{r}
 final_fit <- last_fit(final_xgb_wf, split = camels_split)
 collect_metrics(final_fit)
@@ -202,9 +230,11 @@ ggplot(final_predictions, aes(x = .pred, y = q_mean)) +
     axis.title = element_text(size = 12)
   )
 ```
-The R^2 is 0.985 which explains 98.5% of the variance in q_mean. RMSE is 0.175 which means that the predictions are off by 0.175 units
 
-Building a Map 
+The R\^2 is 0.985 which explains 98.5% of the variance in q_mean. RMSE is 0.175 which means that the predictions are off by 0.175 units
+
+Building a Map
+
 ```{r}
 library(ggplot2)
 final_fit <- fit(final_wf, camels_clean)
@@ -229,5 +259,3 @@ map_resid <- ggplot(camels_aug, aes(x = gauge_lon, y = gauge_lat, color = residu
 library(patchwork)
 (map_pred + map_resid)
 ```
-
-
