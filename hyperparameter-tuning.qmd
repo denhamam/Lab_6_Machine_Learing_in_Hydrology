@@ -54,8 +54,7 @@ camels_test  <- testing(camels_split)
 
 Feature Engineering
 ```{r}
-camels_recipe <- recipe(q_mean ~ 3, data = camels_train) %>%
-  step_rm(gauge_lat, gauge_lon) %>%
+camels_recipe <- recipe(q_mean ~ low_prec_freq + p_mean, data = camels_train) %>%
   step_novel(all_nominal_predictors()) %>%
   step_unknown(all_nominal_predictors()) %>%
   step_other(all_nominal_predictors(), threshold = 0.01) %>%
@@ -169,6 +168,17 @@ The results from show_best() are that the best-preforming boosted tree model usi
 
 Finalize your model
 ```{r}
+best_params <- select_best(model_params, metric = "rmse")
+final_xgb_model <- boost_tree(
+  mode = "regression",
+  engine = "xgboost",
+  trees = best_params$trees,
+  tree_depth = best_params$tree_depth,
+  learn_rate = best_params$learn_rate
+)
+final_xgb_wf <- workflow() %>%
+  add_model(final_xgb_model) %>%
+  add_recipe(camels_recipe)
 final_fit <- last_fit(final_wf, split = camels_split)
 ```
 
@@ -196,6 +206,7 @@ The R^2 is 0.985 which explains 98.5% of the variance in q_mean. RMSE is 0.175 w
 
 Building a Map 
 ```{r}
+library(ggplot2)
 final_fit <- fit(final_wf, camels_clean)
 
 camels_aug <- augment(final_fit, new_data = camels_clean) %>%
@@ -215,6 +226,7 @@ map_resid <- ggplot(camels_aug, aes(x = gauge_lon, y = gauge_lat, color = residu
   labs(title = "Residuals (Squared Errors)", color = "Residual") +
   theme_minimal()
 
+library(patchwork)
 (map_pred + map_resid)
 ```
 
